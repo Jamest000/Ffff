@@ -52,6 +52,8 @@ class ControlCenterOverlay(
     private var rootParams: WindowManager.LayoutParams? = null
     private var activeSettings: FreeformSettings = FreeformSettings()
     private var torchOn = false
+    private var wifiToggleState = true
+    private var btToggleState = false
     private var currentProgress = 0f
 
     private val springOut = PathInterpolator(0.22f, 1.0f, 0.36f, 1.0f)
@@ -476,14 +478,24 @@ class ControlCenterOverlay(
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ).apply { bottomMargin = dp(10) }
             }
-            val wifiBtn = pillToggle("WLAN", "📶") {
+            val wifiBtn = pillToggle(if (wifiToggleState) "WLAN · 开" else "WLAN · 关", "📶", wifiToggleState) {
+                wifiToggleState = !wifiToggleState
+                val cmd = if (wifiToggleState) "svc wifi enable" else "svc wifi disable"
+                scope.launch {
+                    val r = RootShell.exec(cmd)
+                    onToast(if (r.isSuccess) (if (wifiToggleState) "已开启 WLAN" else "已关闭 WLAN") else "切换失败，请检查 Root 权限")
+                }
                 animateToDismiss()
-                context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
             (wifiBtn.layoutParams as LinearLayout.LayoutParams).marginEnd = dp(10)
-            val btBtn = pillToggle("蓝牙", "ᛒ") {
+            val btBtn = pillToggle(if (btToggleState) "蓝牙 · 开" else "蓝牙 · 关", "ᛒ", btToggleState) {
+                btToggleState = !btToggleState
+                val cmd = if (btToggleState) "svc bluetooth enable" else "svc bluetooth disable"
+                scope.launch {
+                    val r = RootShell.exec(cmd)
+                    onToast(if (r.isSuccess) (if (btToggleState) "已开启蓝牙" else "已关闭蓝牙") else "切换失败，请检查 Root 权限")
+                }
                 animateToDismiss()
-                context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
             row1.addView(wifiBtn)
             row1.addView(btBtn)

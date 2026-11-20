@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -68,6 +69,7 @@ import com.aospa.flymefreeform.App
 import com.aospa.flymefreeform.core.AppCatalog
 import com.aospa.flymefreeform.core.AppEntry
 import com.aospa.flymefreeform.core.RootShell
+import com.aospa.flymefreeform.core.WechatRecorder
 import kotlinx.coroutines.launch
 import com.aospa.flymefreeform.notification.FreeformNotificationListener
 import com.aospa.flymefreeform.overlay.FreeformGestureService
@@ -134,7 +136,10 @@ private fun MainScreen() {
     var overlayOk by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var notifListenerOk by remember { mutableStateOf(isNotificationListenerEnabled(context)) }
     var serviceRunning by remember { mutableStateOf(FreeformGestureService.instance != null) }
+    var rootOk by remember { mutableStateOf<Boolean?>(null) }
     var bcrInstalled by remember { mutableStateOf(isPackageInstalled(context, "com.chiller3.bcr")) }
+    val isWechatRecording by WechatRecorder.isRecording.collectAsState()
+    val lastRecPath by WechatRecorder.lastSavedPath.collectAsState()
 
     var installedApps by remember { mutableStateOf<List<AppEntry>>(emptyList()) }
     var pickerMode by remember { mutableStateOf<String?>(null) }
@@ -144,6 +149,7 @@ private fun MainScreen() {
         notifListenerOk = isNotificationListenerEnabled(context)
         serviceRunning = FreeformGestureService.instance != null
         bcrInstalled = isPackageInstalled(context, "com.chiller3.bcr")
+        scope.launch { rootOk = RootShell.isRootAvailable() }
     }
 
     LaunchedEffect(Unit) {
@@ -177,6 +183,7 @@ private fun MainScreen() {
         ) {
             // 1. 模块与权限状态
             SectionCard(title = "模块与权限状态") {
+                StatusRow("Root 权限", rootOk?.let { if (it) "已获取" else "未获取（请在 Magisk/KSU 授权）" } ?: "检测中...")
                 StatusRow("LSPosed 模块激活", if (xposedActive) "已激活" else "未激活（请在 LSPosed 勾选系统界面并重启）")
                 StatusRow("悬浮窗权限（弹幕/手势）", if (overlayOk) "已授权" else "未授权")
                 StatusRow("通知监听权限（弹幕通知）", if (notifListenerOk) "已授权" else "未授权")
@@ -193,6 +200,12 @@ private fun MainScreen() {
                             if (Settings.canDrawOverlays(context)) {
                                 FreeformGestureService.start(context)
                                 serviceRunning = true
+                                Toast.makeText(context, "弹幕与手势服务已启动", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "请先开启悬浮窗权限", Toast.LENGTH_SHORT).show()
+                                context.startActivity(
+                                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+                                )
                             }
                         }
                     ) {
@@ -244,7 +257,10 @@ private fun MainScreen() {
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         scope.launch {
-                            RootShell.exec("killall com.android.systemui || pkill -f com.android.systemui")
+                            val res = RootShell.exec("pidof com.android.systemui | xargs kill -9 || am crash com.android.systemui")
+                            if (!res.isSuccess) {
+                                Toast.makeText(context, "重载失败，请先在 Root 管理器给本应用授权", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     }
                 ) {
@@ -281,7 +297,12 @@ private fun MainScreen() {
                     FilledTonalButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            context.sendBroadcast(Intent(SystemUiHookEntry.ACTION_BUBBLE_COLLAPSE))
+                            if (!xposedActive) {
+                                Toast.makeText(context, "LSPosed 尚未激活，请勾选系统界面并重启", Toast.LENGTH_SHORT).show()
+                            } else {
+                                context.sendBroadcast(Intent(SystemUiHookEntry.ACTION_BUBBLE_COLLAPSE))
+                                Toast.makeText(context, "已发送收起气泡指令", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     ) {
                         Text("测试收起气泡")
@@ -289,7 +310,12 @@ private fun MainScreen() {
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            context.sendBroadcast(Intent(SystemUiHookEntry.ACTION_BUBBLE_DISMISS))
+                            if (!xposedActive) {
+                                Toast.makeText(context, "LSPosed 尚未激活，请勾选系统界面并重启", Toast.LENGTH_SHORT).show()
+                            } else {
+                                context.sendBroadcast(Intent(SystemUiHookEntry.ACTION_BUBBLE_DISMISS))
+                                Toast.makeText(context, "已发送关闭气泡指令", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     ) {
                         Text("测试关闭气泡")
@@ -375,13 +401,8 @@ private fun MainScreen() {
             // 3.5 自定义控制中心设计器（截图同款 + 自己设计）
             SectionCard(title = "自定义控制中心设计器（右上角下拉呼出）") {
                 ToggleRow(
-                    title = "原生控制中心直替模式（LSPosed 注入，推荐）",
-                    subtitle = "直接嵌入 AOSPA 原生下拉面板，100% 原生 120Hz 丝滑度并保留下方原生通知",
-                    checked = settings.xpNativeQsEnabled
-                ) { v -> repo.update { it.copy(xpNativeQsEnabled = v) } }
-
-                ToggleRow(
-                    title = "备用：悬浮窗控制中心（免 LSPosed）",
+                    title = "独立悬浮控制中心（右上角逐帧跟手下拉）",
+                    subtitle = "不改动系统原生通知栏，避免悬浮通知冲突；关闭则完全使用系统原生控制中心",
                     subtitle = "手指下滑实时跟手展开 + 实时渐变模糊，底部上滑同样跟手收起",
                     checked = settings.customControlCenterEnabled
                 ) { v -> repo.update { it.copy(customControlCenterEnabled = v) } }
@@ -451,6 +472,11 @@ private fun MainScreen() {
                             context.startForegroundService(
                                 Intent(context, FreeformGestureService::class.java)
                                     .setAction(FreeformGestureService.ACTION_OPEN_CONTROL_CENTER)
+                            )
+                        } else {
+                            Toast.makeText(context, "请先授予悬浮窗权限才能预览控制中心", Toast.LENGTH_SHORT).show()
+                            context.startActivity(
+                                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
                             )
                         }
                     }
@@ -543,24 +569,51 @@ private fun MainScreen() {
                 }
             }
 
-            // 5. 通话录音（BCR 模块状态检测）
-            SectionCard(title = "通话双向无声录音（BCR 模块）") {
-                StatusRow("BCR 通话录音模块", if (bcrInstalled) "已安装" else "未安装")
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "Android 17 双向通话内录需要系统 /priv-app 特权权限，建议直接在 Magisk / KernelSU 中刷入开源 BCR (Basic Call Recorder) 模块，无声自动录音且最稳定。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            // 5. 微信通话录音 & 电话双向录音（BCR）
+            SectionCard(title = "微信录音 & 电话双向录音") {
+                StatusRow("微信通话录音状态", if (isWechatRecording) "正在录音中..." else "待机")
+                if (lastRecPath.isNotBlank()) {
+                    Text(
+                        text = "上次保存：$lastRecPath",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        val msg = WechatRecorder.toggle(context)
+                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                    }
+                ) {
+                    Text(if (isWechatRecording) "停止微信通话录音并保存" else "开始微信通话录音（免 Hook 零封号）")
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 10.dp))
+
+                StatusRow("普通电话录音（BCR 模块）", if (bcrInstalled) "已安装" else "未安装")
+                Spacer(Modifier.height(6.dp))
                 if (bcrInstalled) {
-                    Spacer(Modifier.height(8.dp))
                     FilledTonalButton(
+                        modifier = Modifier.fillMaxWidth(),
                         onClick = {
                             context.packageManager.getLaunchIntentForPackage("com.chiller3.bcr")
                                 ?.let { context.startActivity(it) }
                         }
                     ) {
                         Text("打开 BCR 通话录音设置")
+                    }
+                } else {
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/chenxiaolong/BCR/releases"))
+                            )
+                        }
+                    ) {
+                        Text("前往 GitHub 下载 BCR 通话录音模块")
                     }
                 }
             }

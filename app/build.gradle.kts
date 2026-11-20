@@ -12,8 +12,8 @@ android {
         applicationId = "com.aospa.flymefreeform"
         minSdk = 31
         targetSdk = 35
-        versionCode = 430
-        versionName = "4.3.0-complete"
+        versionCode = 460
+        versionName = "4.6.0-fixed"
     }
 
     buildTypes {

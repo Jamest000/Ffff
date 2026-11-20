@@ -115,7 +115,6 @@ class SystemUiHookEntry : IXposedHookLoadPackage {
         reloadPrefs()
         XposedBridge.log("AospaFlymeHook v4.1: 已注入 AOSPA 17 SystemUI")
 
-        hookNativeQuickSettings(lpparam.classLoader)
         hookBubbleStackView(lpparam.classLoader)
         hookBubbleController(lpparam.classLoader)
         hookBubblePositioner(lpparam.classLoader)

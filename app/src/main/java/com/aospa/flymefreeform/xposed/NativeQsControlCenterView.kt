@@ -118,7 +118,7 @@ class NativeQsControlCenterView(
         config = newConfig
         removeAllViews()
 
-        setPadding(dp(16), dp(8), dp(16), dp(12))
+        setPadding(dp(16), dp(46), dp(16), dp(14))
 
         val isDark = when (config.themeMode) {
             1 -> true
@@ -279,7 +279,7 @@ class NativeQsControlCenterView(
                 }
 
                 val prevBtn = TextView(context).apply {
-                    text = "⏮"
+                    text = "◄◄"
                     setTextColor(textPrimary)
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
                     gravity = Gravity.CENTER
@@ -295,7 +295,7 @@ class NativeQsControlCenterView(
                     setOnClickListener { mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }
                 }
                 val nextBtn = TextView(context).apply {
-                    text = "⏭"
+                    text = "►►"
                     setTextColor(textPrimary)
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
                     gravity = Gravity.CENTER
@@ -314,11 +314,13 @@ class NativeQsControlCenterView(
                 val am = context.getSystemService(AudioManager::class.java)
                 val maxVol = am?.getStreamMaxVolume(AudioManager.STREAM_MUSIC)?.coerceAtLeast(1) ?: 15
                 val curVol = am?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 7
-                val curBright = try {
+                val rawBright = try {
                     Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
                 } catch (_: Throwable) {
                     128
                 }
+                val maxBright = if (rawBright > 255) 4095f else 255f
+                val brightInitRatio = (rawBright / maxBright).coerceIn(0.15f, 1f)
 
                 fun verticalSlider(
                     iconSym: String,
@@ -339,7 +341,7 @@ class NativeQsControlCenterView(
                         background = makeBg(radiusPx * 0.7f, sliderActiveColor)
                         layoutParams = FrameLayout.LayoutParams(
                             FrameLayout.LayoutParams.MATCH_PARENT,
-                            dp((164 * ratio).toInt())
+                            dp((164 * ratio).toInt().coerceAtLeast(50))
                         ).apply { gravity = Gravity.BOTTOM }
                     }
                     track.addView(fill)
@@ -362,7 +364,7 @@ class NativeQsControlCenterView(
                                 val h = v.height.coerceAtLeast(1)
                                 ratio = (1f - (event.y / h)).coerceIn(0.04f, 1f)
                                 val lp = fill.layoutParams as FrameLayout.LayoutParams
-                                lp.height = (h * ratio).toInt().coerceAtLeast(dp(22))
+                                lp.height = (h * ratio).toInt().coerceAtLeast(dp(50))
                                 fill.layoutParams = lp
                                 onChange(ratio)
                                 true
@@ -381,8 +383,8 @@ class NativeQsControlCenterView(
                     }
                 )
                 heroRow.addView(
-                    verticalSlider("☀", curBright / 255f, 0) { r ->
-                        val b = (r * 255).toInt().coerceIn(8, 255)
+                    verticalSlider("☼", brightInitRatio, 0) { r ->
+                        val b = (r * maxBright).toInt().coerceIn(10, maxBright.toInt())
                         try {
                             Settings.System.putInt(
                                 context.contentResolver,

@@ -21,7 +21,7 @@ data class FreeformSettings(
     val xpFixBoldClipping: Boolean = true,
     val xpNotifCardStyle: Int = 2,      // 0=默认, 1=直角8dp, 2=Flyme柔和24dp, 3=胶囊玻璃34dp
     // === 自定义控制中心（复刻截图同款 + 可自由设计） ===
-    val xpNativeQsEnabled: Boolean = true,
+    val xpNativeQsEnabled: Boolean = false,
     val customControlCenterEnabled: Boolean = false,
     val ccFullTopBarTakeover: Boolean = false,
     val ccThemeMode: Int = 0,           // 0=浅色磨砂(截图同款), 1=深色暗黑, 2=跟随系统
@@ -91,7 +91,7 @@ class SettingsRepository(private val context: Context) {
             xpClockScale = prefs.getFloat("xp_clock_scale", 1.0f),
             xpFixBoldClipping = prefs.getBoolean("xp_fix_bold_clipping", true),
             xpNotifCardStyle = prefs.getInt("xp_notif_card_style", 2),
-            xpNativeQsEnabled = prefs.getBoolean("xp_native_qs_enabled", true),
+            xpNativeQsEnabled = prefs.getBoolean("xp_native_qs_v45", false),
             customControlCenterEnabled = prefs.getBoolean("cc_enabled_v4", false),
             ccFullTopBarTakeover = prefs.getBoolean("cc_full_top_bar", false),
             ccThemeMode = prefs.getInt("cc_theme_mode", 0),
@@ -129,7 +129,7 @@ class SettingsRepository(private val context: Context) {
             putFloat("xp_clock_scale", next.xpClockScale)
             putBoolean("xp_fix_bold_clipping", next.xpFixBoldClipping)
             putInt("xp_notif_card_style", next.xpNotifCardStyle)
-            putBoolean("xp_native_qs_enabled", next.xpNativeQsEnabled)
+            putBoolean("xp_native_qs_v45", next.xpNativeQsEnabled)
             putBoolean("cc_enabled_v4", next.customControlCenterEnabled)
             putBoolean("cc_full_top_bar", next.ccFullTopBarTakeover)
             putInt("cc_theme_mode", next.ccThemeMode)

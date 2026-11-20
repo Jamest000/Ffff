@@ -35,6 +35,7 @@ import com.aospa.flymefreeform.R
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
 import com.aospa.flymefreeform.core.AppCatalog
+import com.aospa.flymefreeform.core.RootFreeformEngine
 import com.aospa.flymefreeform.core.WechatRecorder
 import com.aospa.flymefreeform.data.FreeformSettings
 import com.aospa.flymefreeform.ui.MainActivity
@@ -552,10 +553,17 @@ class FreeformGestureService : Service() {
     }
 
     private fun launchAppBubble(pkg: String) {
-        val intent = Intent(SystemUiHookEntry.ACTION_LAUNCH_APP_BUBBLE).apply {
-            putExtra(SystemUiHookEntry.EXTRA_PKG, pkg)
+        serviceScope.launch {
+            val ok = RootFreeformEngine.launchInFreeform(
+                context = this@FreeformGestureService,
+                packageName = pkg,
+                widthRatio = 0.80f,
+                heightRatio = 0.56f
+            )
+            if (!ok) {
+                flashToastCapsule("小窗启动失败：请先授予 Root 权限")
+            }
         }
-        sendBroadcast(intent)
     }
 
     private fun sendBubbleDismiss() {
