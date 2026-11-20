@@ -403,7 +403,6 @@ private fun MainScreen() {
                 ToggleRow(
                     title = "独立悬浮控制中心（右上角逐帧跟手下拉）",
                     subtitle = "不改动系统原生通知栏，避免悬浮通知冲突；关闭则完全使用系统原生控制中心",
-                    subtitle = "手指下滑实时跟手展开 + 实时渐变模糊，底部上滑同样跟手收起",
                     checked = settings.customControlCenterEnabled
                 ) { v -> repo.update { it.copy(customControlCenterEnabled = v) } }
 
