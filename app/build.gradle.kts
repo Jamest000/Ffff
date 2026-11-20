@@ -12,8 +12,8 @@ android {
         applicationId = "com.aospa.flymefreeform"
         minSdk = 31
         targetSdk = 35
-        versionCode = 100
-        versionName = "1.0.0-aospa"
+        versionCode = 430
+        versionName = "4.3.0-complete"
     }
 
     buildTypes {
@@ -50,6 +50,8 @@ android {
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
+
+    compileOnly("de.robv.android.xposed:api:82")
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")

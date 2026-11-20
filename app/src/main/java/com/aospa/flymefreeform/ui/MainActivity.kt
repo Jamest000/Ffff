@@ -14,8 +14,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,6 +37,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -46,7 +50,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -58,37 +61,37 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.aospa.flymefreeform.App
 import com.aospa.flymefreeform.core.AppCatalog
 import com.aospa.flymefreeform.core.AppEntry
-import com.aospa.flymefreeform.core.RootFreeformEngine
 import com.aospa.flymefreeform.core.RootShell
+import kotlinx.coroutines.launch
 import com.aospa.flymefreeform.notification.FreeformNotificationListener
 import com.aospa.flymefreeform.overlay.FreeformGestureService
-import kotlinx.coroutines.launch
+import com.aospa.flymefreeform.xposed.SystemUiHookEntry
+import com.aospa.flymefreeform.xposed.XposedStatus
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
     private val notifPermLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { /* 授权结果在页面刷新时自动反映 */ }
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {}
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) needed.add(Manifest.permission.POST_NOTIFICATIONS)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.RECORD_AUDIO)
         }
+        if (needed.isNotEmpty()) notifPermLauncher.launch(needed.toTypedArray())
         setContent {
             val darkTheme = isSystemInDarkTheme()
             val colorScheme = if (darkTheme) {
@@ -110,34 +113,37 @@ private fun isNotificationListenerEnabled(context: Context): Boolean {
     return flat.contains(cn)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private fun isPackageInstalled(context: Context, pkg: String): Boolean {
+    return try {
+        context.packageManager.getPackageInfo(pkg, 0)
+        true
+    } catch (_: Exception) {
+        false
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun MainScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val repo = App.instance.settings
     val settings by repo.settings.collectAsState()
-    val logs by RootShell.logs.collectAsState()
 
-    var rootOk by remember { mutableStateOf<Boolean?>(null) }
-    var freeformEnabled by remember { mutableStateOf<Boolean?>(null) }
+    val xposedActive = remember { XposedStatus.isModuleActive() }
     var overlayOk by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var notifListenerOk by remember { mutableStateOf(isNotificationListenerEnabled(context)) }
     var serviceRunning by remember { mutableStateOf(FreeformGestureService.instance != null) }
+    var bcrInstalled by remember { mutableStateOf(isPackageInstalled(context, "com.chiller3.bcr")) }
 
     var installedApps by remember { mutableStateOf<List<AppEntry>>(emptyList()) }
-    var pickerMode by remember { mutableStateOf<String?>(null) } // "quick" | "notify" | null
+    var pickerMode by remember { mutableStateOf<String?>(null) }
 
     fun refreshStatus() {
         overlayOk = Settings.canDrawOverlays(context)
         notifListenerOk = isNotificationListenerEnabled(context)
         serviceRunning = FreeformGestureService.instance != null
-        scope.launch {
-            rootOk = RootShell.isRootAvailable()
-            if (rootOk == true) {
-                freeformEnabled = RootFreeformEngine.isFreeformSettingEnabled()
-            }
-        }
+        bcrInstalled = isPackageInstalled(context, "com.chiller3.bcr")
     }
 
     LaunchedEffect(Unit) {
@@ -150,9 +156,9 @@ private fun MainScreen() {
             TopAppBar(
                 title = {
                     Column {
-                        Text("Flyme小窗 · AOSPA", fontWeight = FontWeight.SemiBold)
+                        Text("Flyme小窗 · AOSPA 17", fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Root 原生自由窗口 + 手势取消小窗",
+                            "气泡魔改 · 自定义控制中心 · 弹幕 · 粗体防裁切",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -169,16 +175,12 @@ private fun MainScreen() {
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // 1. 环境与权限看板
-            SectionCard(title = "环境与权限检查") {
-                StatusRow("Root 权限", rootOk?.let { if (it) "已获取" else "未获取" } ?: "检测中...")
-                StatusRow(
-                    "系统自由窗口开关",
-                    freeformEnabled?.let { if (it) "已开启" else "未开启" } ?: "待检测"
-                )
-                StatusRow("悬浮窗权限", if (overlayOk) "已授权" else "未授权")
-                StatusRow("通知监听权限（直开小窗）", if (notifListenerOk) "已授权" else "未授权")
-                StatusRow("手势服务状态", if (serviceRunning) "运行中" else "未启动")
+            // 1. 模块与权限状态
+            SectionCard(title = "模块与权限状态") {
+                StatusRow("LSPosed 模块激活", if (xposedActive) "已激活" else "未激活（请在 LSPosed 勾选系统界面并重启）")
+                StatusRow("悬浮窗权限（弹幕/手势）", if (overlayOk) "已授权" else "未授权")
+                StatusRow("通知监听权限（弹幕通知）", if (notifListenerOk) "已授权" else "未授权")
+                StatusRow("弹幕与手势服务", if (serviceRunning) "运行中" else "未启动")
 
                 Spacer(Modifier.height(8.dp))
                 Row(
@@ -188,30 +190,25 @@ private fun MainScreen() {
                     Button(
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            scope.launch {
-                                val ok = RootFreeformEngine.ensureFreeformEnabled()
-                                freeformEnabled = ok
-                                if (Settings.canDrawOverlays(context)) {
-                                    FreeformGestureService.start(context)
-                                    serviceRunning = true
-                                }
+                            if (Settings.canDrawOverlays(context)) {
+                                FreeformGestureService.start(context)
+                                serviceRunning = true
                             }
                         }
                     ) {
-                        Text("一键开启并启动")
+                        Text("启动弹幕与手势服务")
                     }
                     OutlinedButton(
                         onClick = {
                             if (serviceRunning) {
                                 FreeformGestureService.stop(context)
                                 serviceRunning = false
-                            } else if (Settings.canDrawOverlays(context)) {
-                                FreeformGestureService.start(context)
-                                serviceRunning = true
+                            } else {
+                                refreshStatus()
                             }
                         }
                     ) {
-                        Text(if (serviceRunning) "停止服务" else "启动服务")
+                        Text(if (serviceRunning) "停止" else "刷新")
                     }
                 }
 
@@ -223,11 +220,12 @@ private fun MainScreen() {
                     FilledTonalButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            val intent = Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}")
+                            context.startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}")
+                                )
                             )
-                            context.startActivity(intent)
                         }
                     ) {
                         Text("授权悬浮窗")
@@ -241,75 +239,269 @@ private fun MainScreen() {
                         Text("授权通知监听")
                     }
                 }
-
-                TextButton(
-                    modifier = Modifier.align(Alignment.End),
-                    onClick = { refreshStatus() }
+                Spacer(Modifier.height(6.dp))
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        scope.launch {
+                            RootShell.exec("killall com.android.systemui || pkill -f com.android.systemui")
+                        }
+                    }
                 ) {
-                    Text("刷新状态")
+                    Text("一键重载 SystemUI（调完样式 2 秒生效，免重启手机）")
                 }
             }
 
-            // 2. 取消/关闭小窗手势（核心功能）
-            SectionCard(title = "取消小窗手势（默认全开）") {
+            // 2. 原生气泡小窗魔改（LSPosed Hook SystemUI）
+            SectionCard(title = "Android 17 原生气泡魔改（LSPosed）") {
                 ToggleRow(
-                    title = "顶部悬浮条上滑取消小窗",
-                    subtitle = "检测到小窗时顶部自动出现细条，向上轻滑即关闭当前小窗",
-                    checked = settings.topBarDismissSwipeUpEnabled
-                ) { v -> repo.update { it.copy(topBarDismissSwipeUpEnabled = v) } }
+                    title = "去掉气泡展开时的背景变暗遮罩",
+                    subtitle = "展开气泡时底层页面保持原亮度，视觉更通透",
+                    checked = settings.xpBubbleNoScrim
+                ) { v -> repo.update { it.copy(xpBubbleNoScrim = v) } }
 
                 ToggleRow(
-                    title = "顶部悬浮条双击取消小窗",
-                    subtitle = "连续点击两次顶部小窗细条，直接关闭当前小窗",
-                    checked = settings.topBarDismissDoubleTapEnabled
-                ) { v -> repo.update { it.copy(topBarDismissDoubleTapEnabled = v) } }
+                    title = "允许同时操作底层应用（取消点外收起）",
+                    subtitle = "点击气泡外部空白处不再强制收起，可边看气泡边操作底层 App",
+                    checked = settings.xpBubbleTouchOutside
+                ) { v -> repo.update { it.copy(xpBubbleTouchOutside = v) } }
 
-                ToggleRow(
-                    title = "顶部悬浮条下滑展开全屏",
-                    subtitle = "向下拉顶部细条，将当前小窗切换回全屏显示",
-                    checked = settings.topBarExpandSwipeDownEnabled
-                ) { v -> repo.update { it.copy(topBarExpandSwipeDownEnabled = v) } }
+                Spacer(Modifier.height(4.dp))
+                Text("气泡展开高度比例：${(settings.xpBubbleHeightScale * 100).roundToInt()}%")
+                Slider(
+                    value = settings.xpBubbleHeightScale,
+                    onValueChange = { v -> repo.update { it.copy(xpBubbleHeightScale = v) } },
+                    valueRange = 0.50f..1.00f
+                )
 
-                ToggleRow(
-                    title = "屏幕边缘手势一键取消小窗",
-                    subtitle = "在屏幕中上侧边缘向内滑或下滑，无需点叉直接取消小窗",
-                    checked = settings.edgeDismissGestureEnabled
-                ) { v -> repo.update { it.copy(edgeDismissGestureEnabled = v) } }
-
-                if (settings.edgeDismissGestureEnabled) {
-                    ToggleRow(
-                        title = "边缘取消热区放在左侧",
-                        subtitle = "关闭则放到屏幕右侧（与侧边栏呼出错开）",
-                        checked = settings.edgeDismissOnLeft
-                    ) { v -> repo.update { it.copy(edgeDismissOnLeft = v) } }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilledTonalButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            context.sendBroadcast(Intent(SystemUiHookEntry.ACTION_BUBBLE_COLLAPSE))
+                        }
+                    ) {
+                        Text("测试收起气泡")
+                    }
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            context.sendBroadcast(Intent(SystemUiHookEntry.ACTION_BUBBLE_DISMISS))
+                        }
+                    ) {
+                        Text("测试关闭气泡")
+                    }
                 }
             }
 
-            // 3. 呼出小窗手势与通知直开
-            SectionCard(title = "呼出小窗与通知直开") {
+            // 3. 状态栏与通知栏多种样式（LSPosed Hook SystemUI）
+            SectionCard(title = "状态栏与通知栏样式美化（LSPosed）") {
+                Text(
+                    "状态栏时钟样式",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(6.dp))
+                val clockOptions = listOf(
+                    0 to "系统默认",
+                    1 to "带秒数",
+                    2 to "星期+时间",
+                    3 to "日期+星期",
+                    4 to "中文时段"
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    clockOptions.forEach { (id, label) ->
+                        FilterChip(
+                            selected = settings.xpClockStyle == id,
+                            onClick = { repo.update { it.copy(xpClockStyle = id) } },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+
                 ToggleRow(
-                    title = "左下角斜向内滑呼出小窗菜单",
-                    subtitle = "Flyme 经典底角手势，斜向上内滑弹出快捷应用面板",
+                    title = "状态栏时钟加粗",
+                    subtitle = "让左上角时间更醒目清晰",
+                    checked = settings.xpClockBold
+                ) { v -> repo.update { it.copy(xpClockBold = v) } }
+
+                ToggleRow(
+                    title = "粗字体防显示不全保护",
+                    subtitle = "放开状态栏宽度限制并去除多余内边距，避免加粗或换字体后截断",
+                    checked = settings.xpFixBoldClipping
+                ) { v -> repo.update { it.copy(xpFixBoldClipping = v) } }
+
+                Text("状态栏时钟字号微调：${(settings.xpClockScale * 100).roundToInt()}%")
+                Slider(
+                    value = settings.xpClockScale,
+                    onValueChange = { v -> repo.update { it.copy(xpClockScale = v) } },
+                    valueRange = 0.80f..1.15f
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                Text(
+                    "下拉通知卡片风格（修改后下次展开通知栏生效）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(6.dp))
+                val cardOptions = listOf(
+                    0 to "系统默认",
+                    1 to "直角硬朗 8dp",
+                    2 to "Flyme 柔和 24dp",
+                    3 to "超大胶囊玻璃 34dp"
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    cardOptions.forEach { (id, label) ->
+                        FilterChip(
+                            selected = settings.xpNotifCardStyle == id,
+                            onClick = { repo.update { it.copy(xpNotifCardStyle = id) } },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+            }
+
+            // 3.5 自定义控制中心设计器（截图同款 + 自己设计）
+            SectionCard(title = "自定义控制中心设计器（右上角下拉呼出）") {
+                ToggleRow(
+                    title = "原生控制中心直替模式（LSPosed 注入，推荐）",
+                    subtitle = "直接嵌入 AOSPA 原生下拉面板，100% 原生 120Hz 丝滑度并保留下方原生通知",
+                    checked = settings.xpNativeQsEnabled
+                ) { v -> repo.update { it.copy(xpNativeQsEnabled = v) } }
+
+                ToggleRow(
+                    title = "备用：悬浮窗控制中心（免 LSPosed）",
+                    subtitle = "手指下滑实时跟手展开 + 实时渐变模糊，底部上滑同样跟手收起",
+                    checked = settings.customControlCenterEnabled
+                ) { v -> repo.update { it.copy(customControlCenterEnabled = v) } }
+
+                ToggleRow(
+                    title = "接管整条顶部状态栏（替代原生下拉入口）",
+                    subtitle = "开启后顶部任意位置下滑都拉出你的控制中心；关闭则仅右上角触发",
+                    checked = settings.ccFullTopBarTakeover
+                ) { v -> repo.update { it.copy(ccFullTopBarTakeover = v) } }
+
+                Text("面板主题风格", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.height(6.dp))
+                val themeOpts = listOf(0 to "浅色磨砂（截图同款）", 1 to "深色暗黑", 2 to "跟随系统")
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    themeOpts.forEach { (id, label) ->
+                        FilterChip(
+                            selected = settings.ccThemeMode == id,
+                            onClick = { repo.update { it.copy(ccThemeMode = id) } },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(6.dp))
+                Text("背景原生高斯模糊强度：${settings.ccBlurRadius}")
+                Slider(
+                    value = settings.ccBlurRadius.toFloat(),
+                    onValueChange = { v -> repo.update { it.copy(ccBlurRadius = v.roundToInt()) } },
+                    valueRange = 0f..100f
+                )
+
+                Text("卡片圆角大小：${settings.ccCardRadiusDp} dp")
+                Slider(
+                    value = settings.ccCardRadiusDp.toFloat(),
+                    onValueChange = { v -> repo.update { it.copy(ccCardRadiusDp = v.roundToInt()) } },
+                    valueRange = 8f..34f
+                )
+
+                Text("卡片不透明度：${(settings.ccCardAlpha * 100).roundToInt()}%")
+                Slider(
+                    value = settings.ccCardAlpha,
+                    onValueChange = { v -> repo.update { it.copy(ccCardAlpha = v) } },
+                    valueRange = 0.55f..1.0f
+                )
+
+                ToggleRow("显示左侧音乐卡片", "2x2 媒体播放与切歌控制", settings.ccShowMusicCard) { v ->
+                    repo.update { it.copy(ccShowMusicCard = v) }
+                }
+                ToggleRow("显示右侧双竖条滑块", "竖向粗条音量与亮度滑块", settings.ccShowVerticalSliders) { v ->
+                    repo.update { it.copy(ccShowVerticalSliders = v) }
+                }
+                ToggleRow("显示大胶囊快捷开关", "WLAN、蓝牙、手电筒与微信通话一键录音", settings.ccShowQuickToggles) { v ->
+                    repo.update { it.copy(ccShowQuickToggles = v) }
+                }
+                ToggleRow("显示毛玻璃通知列表", "同步系统通知与底部「全部清除」", settings.ccShowNotifications) { v ->
+                    repo.update { it.copy(ccShowNotifications = v) }
+                }
+
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        if (Settings.canDrawOverlays(context)) {
+                            context.startForegroundService(
+                                Intent(context, FreeformGestureService::class.java)
+                                    .setAction(FreeformGestureService.ACTION_OPEN_CONTROL_CENTER)
+                            )
+                        }
+                    }
+                ) {
+                    Text("立即预览我设计的控制中心")
+                }
+            }
+
+            // 4. 弹幕通知与边缘取消气泡手势
+            SectionCard(title = "全圆角弹幕通知与手势控制") {
+                ToggleRow(
+                    title = "验证码自动识别复制（纯本地）",
+                    subtitle = "收到短信或 App 验证码时自动复制到剪贴板并弹胶囊提示",
+                    checked = settings.autoCopyOtpEnabled
+                ) { v -> repo.update { it.copy(autoCopyOtpEnabled = v) } }
+
+                ToggleRow(
+                    title = "Flyme 风格全圆角弹幕通知",
+                    subtitle = "白名单消息以圆角胶囊弹幕横飘提醒，点击直开应用",
+                    checked = settings.danmakuNotificationEnabled
+                ) { v -> repo.update { it.copy(danmakuNotificationEnabled = v) } }
+
+                ToggleRow(
+                    title = "同时显示顶部悬浮通知横幅",
+                    subtitle = "默认关闭，喜欢卡片横幅可开启",
+                    checked = settings.notificationBannerEnabled
+                ) { v -> repo.update { it.copy(notificationBannerEnabled = v) } }
+
+                ToggleRow(
+                    title = "左下角斜滑主动呼出小窗菜单（Q 弹动画）",
+                    subtitle = "从左下角斜向内上滑弹出小窗菜单，点击应用直呼原生气泡（右下角留给 Gemini）",
                     checked = settings.cornerLeftLaunchEnabled
                 ) { v -> repo.update { it.copy(cornerLeftLaunchEnabled = v) } }
 
                 ToggleRow(
-                    title = "右下角斜向内滑呼出小窗菜单",
-                    subtitle = "右手单手从右下角斜向内滑呼出快捷面板",
-                    checked = settings.cornerRightLaunchEnabled
-                ) { v -> repo.update { it.copy(cornerRightLaunchEnabled = v) } }
-
-                ToggleRow(
-                    title = "侧边栏滑出呼出小窗菜单",
-                    subtitle = "屏幕侧边中段透明细条向内滑呼出快捷面板",
+                    title = "右侧边白条滑出 / 轻点呼出小窗菜单",
+                    subtitle = "右侧中段细条向左滑或轻点弹出 Q 弹快捷小窗面板",
                     checked = settings.sidebarLaunchEnabled
                 ) { v -> repo.update { it.copy(sidebarLaunchEnabled = v) } }
 
                 ToggleRow(
-                    title = "悬浮通知横幅直开小窗",
-                    subtitle = "收到白名单应用消息时顶部弹横幅，点击或下拉直开小窗",
-                    checked = settings.notificationBannerEnabled
-                ) { v -> repo.update { it.copy(notificationBannerEnabled = v) } }
+                    title = "备用：左侧红条手势控制原生气泡",
+                    subtitle = "向内滑/轻点直接关闭当前气泡，向下滑收成圆球（右下角留给 Gemini）",
+                    checked = settings.edgeDismissGestureEnabled
+                ) { v -> repo.update { it.copy(edgeDismissGestureEnabled = v) } }
+
+                ToggleRow(
+                    title = "显示热区调试色块",
+                    subtitle = "打开后高亮显示左侧手势触发区域",
+                    checked = settings.showHotzoneDebug
+                ) { v -> repo.update { it.copy(showHotzoneDebug = v) } }
 
                 Spacer(Modifier.height(6.dp))
                 Row(
@@ -320,91 +512,57 @@ private fun MainScreen() {
                         modifier = Modifier.weight(1f),
                         onClick = { pickerMode = "quick" }
                     ) {
-                        Text("快捷应用 (${settings.quickLaunchPackages.size})")
+                        Text("快捷小窗 (${settings.quickLaunchPackages.size})")
                     }
                     FilledTonalButton(
                         modifier = Modifier.weight(1f),
                         onClick = { pickerMode = "notify" }
                     ) {
-                        Text("通知白名单 (${settings.notificationPackages.size})")
+                        Text("弹幕白名单 (${settings.notificationPackages.size})")
                     }
                 }
-            }
-
-            // 4. 尺寸与手势微调
-            SectionCard(title = "小窗比例与手势微调") {
-                Text("默认小窗宽度：${(settings.windowWidthRatio * 100).roundToInt()}%")
-                Slider(
-                    value = settings.windowWidthRatio,
-                    onValueChange = { v -> repo.update { it.copy(windowWidthRatio = v) } },
-                    valueRange = 0.65f..0.92f
-                )
-
-                Text("默认小窗高度：${(settings.windowHeightRatio * 100).roundToInt()}%")
-                Slider(
-                    value = settings.windowHeightRatio,
-                    onValueChange = { v -> repo.update { it.copy(windowHeightRatio = v) } },
-                    valueRange = 0.45f..0.75f
-                )
-
-                Text("手势触发距离：${settings.gestureSensitivityDp} dp（越小越灵敏）")
-                Slider(
-                    value = settings.gestureSensitivityDp.toFloat(),
-                    onValueChange = { v -> repo.update { it.copy(gestureSensitivityDp = v.roundToInt()) } },
-                    valueRange = 36f..88f
-                )
-
-                ToggleRow(
-                    title = "显示手势热区色块（调试用）",
-                    subtitle = "蓝=底角呼出、绿=侧边呼出、红=边缘取消、橙=顶部取消条",
-                    checked = settings.showHotzoneDebug
-                ) { v -> repo.update { it.copy(showHotzoneDebug = v) } }
-            }
-
-            // 5. 快速验证与日志
-            SectionCard(title = "一键测试与 Root 日志") {
+                Spacer(Modifier.height(6.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    FilledTonalButton(
-                        modifier = Modifier.weight(1f),
-                        onClick = {
-                            val testPkg = settings.quickLaunchPackages.firstOrNull { pkg ->
-                                installedApps.any { it.packageName == pkg }
-                            } ?: installedApps.firstOrNull()?.packageName ?: return@FilledTonalButton
-                            scope.launch {
-                                RootFreeformEngine.launchInFreeform(
-                                    context,
-                                    testPkg,
-                                    settings.windowWidthRatio,
-                                    settings.windowHeightRatio
-                                )
-                            }
-                        }
-                    ) {
-                        Text("测试启动小窗")
-                    }
                     OutlinedButton(
                         modifier = Modifier.weight(1f),
                         onClick = {
-                            scope.launch {
-                                RootFreeformEngine.dismissTopFreeformTask()
+                            val intent = Intent(context, FreeformGestureService::class.java).apply {
+                                action = FreeformGestureService.ACTION_SHOW_BANNER
+                                putExtra(FreeformGestureService.EXTRA_PACKAGE_NAME, context.packageName)
+                                putExtra(FreeformGestureService.EXTRA_TITLE, "测试弹幕通知")
+                                putExtra(FreeformGestureService.EXTRA_TEXT, "AOSPA 17 全圆角弹幕运行正常！")
                             }
+                            context.startForegroundService(intent)
                         }
                     ) {
-                        Text("测试取消小窗")
+                        Text("测试弹幕通知")
                     }
                 }
+            }
 
-                Spacer(Modifier.height(8.dp))
+            // 5. 通话录音（BCR 模块状态检测）
+            SectionCard(title = "通话双向无声录音（BCR 模块）") {
+                StatusRow("BCR 通话录音模块", if (bcrInstalled) "已安装" else "未安装")
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    text = if (logs.isEmpty()) "暂无日志" else logs.takeLast(8).joinToString("\n"),
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    lineHeight = 15.sp,
+                    text = "Android 17 双向通话内录需要系统 /priv-app 特权权限，建议直接在 Magisk / KernelSU 中刷入开源 BCR (Basic Call Recorder) 模块，无声自动录音且最稳定。",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (bcrInstalled) {
+                    Spacer(Modifier.height(8.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            context.packageManager.getLaunchIntentForPackage("com.chiller3.bcr")
+                                ?.let { context.startActivity(it) }
+                        }
+                    ) {
+                        Text("打开 BCR 通话录音设置")
+                    }
+                }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -413,17 +571,15 @@ private fun MainScreen() {
 
     if (pickerMode != null) {
         val isQuick = pickerMode == "quick"
-        val selected = if (isQuick) settings.quickLaunchPackages else settings.notificationPackages
         AppPickerDialog(
-            title = if (isQuick) "选择快捷小窗应用" else "选择通知直开小窗白名单",
+            title = if (isQuick) "选择快捷呼出小窗应用" else "选择弹幕通知白名单应用",
             apps = installedApps,
-            selectedPackages = selected,
+            selectedPackages = if (isQuick) settings.quickLaunchPackages else settings.notificationPackages,
             onToggle = { pkg ->
                 repo.update { cur ->
                     val target = if (isQuick) cur.quickLaunchPackages else cur.notificationPackages
                     val next = if (pkg in target) target - pkg else target + pkg
-                    if (isQuick) cur.copy(quickLaunchPackages = next)
-                    else cur.copy(notificationPackages = next)
+                    if (isQuick) cur.copy(quickLaunchPackages = next) else cur.copy(notificationPackages = next)
                 }
             },
             onDismiss = { pickerMode = null }

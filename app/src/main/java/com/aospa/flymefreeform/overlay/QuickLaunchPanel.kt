@@ -9,6 +9,8 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.GridLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -17,7 +19,7 @@ import android.widget.TextView
 import com.aospa.flymefreeform.core.AppEntry
 
 /**
- * Flyme 风格快捷小窗启动面板（点击应用直接以小窗启动，底部附带一键关闭当前小窗按钮）
+ * Flyme 风格 Q 弹快捷小窗启动面板（Overshoot 弹簧弹出动画，点击任意应用直呼原生气泡小窗）
  */
 class QuickLaunchPanel(
     private val context: Context,
@@ -26,11 +28,12 @@ class QuickLaunchPanel(
     private val onDismissCurrentFreeform: () -> Unit
 ) {
     private var rootView: View? = null
+    private var cardView: View? = null
 
     fun isShowing(): Boolean = rootView != null
 
     fun show(apps: List<AppEntry>) {
-        if (rootView != null) dismiss()
+        if (rootView != null) dismissImmediate()
 
         val density = context.resources.displayMetrics.density
         fun dp(v: Int): Int = (v * density).toInt()
@@ -44,7 +47,7 @@ class QuickLaunchPanel(
         }
 
         val cardBg = GradientDrawable().apply {
-            cornerRadius = dp(24).toFloat()
+            cornerRadius = dp(26).toFloat()
             setColor(Color.parseColor("#F51C1F26"))
             setStroke(dp(1), Color.parseColor("#33FFFFFF"))
         }
@@ -56,7 +59,6 @@ class QuickLaunchPanel(
             isClickable = true
         }
 
-        // 标题栏
         val header = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -64,22 +66,22 @@ class QuickLaunchPanel(
         }
 
         val title = TextView(context).apply {
-            text = "小窗快捷启动"
+            text = "小窗快捷呼出"
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
 
         val closeBtnBg = GradientDrawable().apply {
-            cornerRadius = dp(14).toFloat()
+            cornerRadius = dp(999).toFloat()
             setColor(Color.parseColor("#33FFFFFF"))
         }
         val closeBtn = TextView(context).apply {
-            text = "关闭面板"
+            text = "关闭"
             setTextColor(Color.parseColor("#DCE4F0"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             background = closeBtnBg
-            setPadding(dp(10), dp(5), dp(10), dp(5))
+            setPadding(dp(12), dp(5), dp(12), dp(5))
             setOnClickListener { dismiss() }
         }
 
@@ -87,7 +89,6 @@ class QuickLaunchPanel(
         header.addView(closeBtn)
         card.addView(header)
 
-        // 应用网格
         val scroll = ScrollView(context).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -102,14 +103,13 @@ class QuickLaunchPanel(
         }
 
         if (apps.isEmpty()) {
-            val emptyText = TextView(context).apply {
+            scroll.addView(TextView(context).apply {
                 text = "尚未在设置中添加快捷小窗应用"
                 setTextColor(Color.parseColor("#AAB4C4"))
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                 gravity = Gravity.CENTER
                 setPadding(dp(16), dp(48), dp(16), dp(48))
-            }
-            scroll.addView(emptyText)
+            })
         } else {
             apps.forEach { app ->
                 val item = LinearLayout(context).apply {
@@ -121,17 +121,16 @@ class QuickLaunchPanel(
                         columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
                     }
                     setOnClickListener {
-                        dismiss()
+                        dismissImmediate()
                         onSelectApp(app.packageName)
                     }
                 }
 
-                val icon = ImageView(context).apply {
+                item.addView(ImageView(context).apply {
                     setImageDrawable(app.icon)
                     layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-                }
-
-                val label = TextView(context).apply {
+                })
+                item.addView(TextView(context).apply {
                     text = app.label
                     setTextColor(Color.parseColor("#EEF2F8"))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
@@ -139,10 +138,7 @@ class QuickLaunchPanel(
                     ellipsize = TextUtils.TruncateAt.END
                     gravity = Gravity.CENTER
                     setPadding(0, dp(6), 0, 0)
-                }
-
-                item.addView(icon)
-                item.addView(label)
+                })
                 grid.addView(item)
             }
             scroll.addView(grid)
@@ -150,27 +146,23 @@ class QuickLaunchPanel(
 
         card.addView(scroll)
 
-        // 底部快速取消当前小窗操作条
-        val dismissPillBg = GradientDrawable().apply {
-            cornerRadius = dp(16).toFloat()
-            setColor(Color.parseColor("#33EF5350"))
-            setStroke(dp(1), Color.parseColor("#66EF5350"))
-        }
         val dismissPill = TextView(context).apply {
             text = "一键取消当前小窗"
             setTextColor(Color.parseColor("#FF8A80"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             gravity = Gravity.CENTER
-            background = dismissPillBg
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                setColor(Color.parseColor("#33EF5350"))
+                setStroke(dp(1), Color.parseColor("#66EF5350"))
+            }
             setPadding(dp(16), dp(10), dp(16), dp(10))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(12)
-            }
+            ).apply { topMargin = dp(12) }
             setOnClickListener {
-                dismiss()
+                dismissImmediate()
                 onDismissCurrentFreeform()
             }
         }
@@ -193,17 +185,54 @@ class QuickLaunchPanel(
             PixelFormat.TRANSLUCENT
         )
 
+        // Q 弹弹簧入场初始态
+        backdrop.alpha = 0f
+        card.scaleX = 0.80f
+        card.scaleY = 0.80f
+        card.translationY = dp(42).toFloat()
+        card.alpha = 0f
+
         try {
             windowManager.addView(backdrop, params)
             rootView = backdrop
+            cardView = card
+            backdrop.animate().alpha(1f).setDuration(180L).start()
+            card.animate()
+                .scaleX(1f)
+                .scaleY(1f)
+                .translationY(0f)
+                .alpha(1f)
+                .setDuration(300L)
+                .setInterpolator(OvershootInterpolator(1.35f))
+                .start()
         } catch (_: Exception) {
             rootView = null
+            cardView = null
         }
     }
 
     fun dismiss() {
         val v = rootView ?: return
+        val c = cardView
+        if (c == null) {
+            dismissImmediate()
+            return
+        }
+        v.animate().alpha(0f).setDuration(150L).start()
+        c.animate()
+            .scaleX(0.86f)
+            .scaleY(0.86f)
+            .alpha(0f)
+            .setDuration(150L)
+            .setInterpolator(AccelerateInterpolator())
+            .withEndAction { dismissImmediate() }
+            .start()
+    }
+
+    private fun dismissImmediate() {
+        val v = rootView ?: return
         rootView = null
+        cardView = null
         try {
             windowManager.removeView(v)
         } catch (_: Exception) {

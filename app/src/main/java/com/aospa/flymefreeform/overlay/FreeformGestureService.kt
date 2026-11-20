@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
@@ -22,46 +23,59 @@ import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
+import androidx.core.view.ViewCompat
 import com.aospa.flymefreeform.App
 import com.aospa.flymefreeform.R
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import com.aospa.flymefreeform.core.AppCatalog
-import com.aospa.flymefreeform.core.RootFreeformEngine
+import com.aospa.flymefreeform.core.WechatRecorder
 import com.aospa.flymefreeform.data.FreeformSettings
 import com.aospa.flymefreeform.ui.MainActivity
+import com.aospa.flymefreeform.xposed.SystemUiHookEntry
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 
+/**
+ * v2.0 伴侣服务（零干扰原生气泡）：
+ * - 不再执行 am task resize，彻底杜绝 QQ 等原生气泡半屏卡顿
+ * - 负责全圆角弹幕通知 & 悬浮横幅
+ * - 负责左侧红条手势：向内滑直接关闭当前气泡，向下滑把气泡收起成悬浮圆球
+ */
 class FreeformGestureService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var windowManager: WindowManager
-    private lateinit var quickLaunchPanel: QuickLaunchPanel
     private lateinit var notificationBanner: NotificationBannerView
+    private lateinit var danmakuView: DanmakuNotificationView
+    private lateinit var controlCenter: ControlCenterOverlay
+    private lateinit var quickLaunchPanel: QuickLaunchPanel
 
     private val overlayViews = mutableListOf<View>()
-    private var topControlHandle: View? = null
-    private var topHandleAdded = false
     private var feedbackCapsule: TextView? = null
-    private var monitorJob: Job? = null
-
     private var currentSettings: FreeformSettings = FreeformSettings()
-    private var lastTopBarTapMs = 0L
+    private val recReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == SystemUiHookEntry.ACTION_TOGGLE_WECHAT_REC) {
+                val msg = WechatRecorder.toggle(this@FreeformGestureService)
+                flashToastCapsule(msg)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -69,18 +83,38 @@ class FreeformGestureService : Service() {
         windowManager = getSystemService(WindowManager::class.java)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildForegroundNotification())
-
-        quickLaunchPanel = QuickLaunchPanel(
-            context = this,
-            windowManager = windowManager,
-            onSelectApp = { pkg -> launchPackageInFreeform(pkg) },
-            onDismissCurrentFreeform = { triggerDismissFreeform() }
-        )
+        val recFilter = IntentFilter(SystemUiHookEntry.ACTION_TOGGLE_WECHAT_REC)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(recReceiver, recFilter, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(recReceiver, recFilter)
+        }
 
         notificationBanner = NotificationBannerView(
             context = this,
             windowManager = windowManager,
-            onOpenInFreeform = { pkg -> launchPackageInFreeform(pkg) }
+            onOpenInFreeform = { pkg -> openAppDirectly(pkg) }
+        )
+
+        danmakuView = DanmakuNotificationView(
+            context = this,
+            windowManager = windowManager,
+            onClickOpenFreeform = { pkg -> openAppDirectly(pkg) }
+        )
+
+        controlCenter = ControlCenterOverlay(
+            context = this,
+            windowManager = windowManager,
+            scope = serviceScope,
+            onToast = { msg -> flashToastCapsule(msg) }
+        )
+
+        quickLaunchPanel = QuickLaunchPanel(
+            context = this,
+            windowManager = windowManager,
+            onSelectApp = { pkg -> launchAppBubble(pkg) },
+            onDismissCurrentFreeform = { sendBubbleDismiss() }
         )
 
         serviceScope.launch {
@@ -89,24 +123,23 @@ class FreeformGestureService : Service() {
                 rebuildOverlays(s)
             }
         }
-
-        startFreeformStateMonitor()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_OPEN_PANEL -> openQuickPanel()
-            ACTION_DISMISS_FREEFORM -> triggerDismissFreeform()
-            ACTION_LAUNCH_PACKAGE -> {
-                val pkg = intent.getStringExtra(EXTRA_PACKAGE_NAME)
-                if (!pkg.isNullOrBlank()) launchPackageInFreeform(pkg)
+            ACTION_DISMISS_FREEFORM -> sendBubbleDismiss()
+            ACTION_COLLAPSE_BUBBLE -> sendBubbleCollapse()
+            ACTION_OPEN_CONTROL_CENTER -> controlCenter.show(currentSettings)
+            ACTION_FLASH_TOAST -> {
+                val msg = intent.getStringExtra(EXTRA_TEXT).orEmpty()
+                if (msg.isNotBlank()) flashToastCapsule(msg)
             }
             ACTION_SHOW_BANNER -> {
                 val pkg = intent.getStringExtra(EXTRA_PACKAGE_NAME).orEmpty()
                 val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
                 val text = intent.getStringExtra(EXTRA_TEXT).orEmpty()
-                if (pkg.isNotBlank() && currentSettings.notificationBannerEnabled) {
-                    showNotificationBanner(pkg, title, text)
+                if (pkg.isNotBlank() && (currentSettings.danmakuNotificationEnabled || currentSettings.notificationBannerEnabled)) {
+                    showNotificationOverlay(pkg, title, text)
                 }
             }
         }
@@ -115,19 +148,31 @@ class FreeformGestureService : Service() {
 
     override fun onDestroy() {
         instance = null
-        monitorJob?.cancel()
         clearOverlays()
-        removeTopControlHandle()
         hideFeedbackCapsule()
-        quickLaunchPanel.dismiss()
         notificationBanner.dismiss()
+        danmakuView.clearAll()
+        controlCenter.dismiss()
+        quickLaunchPanel.dismiss()
         serviceScope.cancel()
+        try { unregisterReceiver(recReceiver) } catch (_: Exception) {}
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun excludeFromSystemBackGesture(view: View) {
+        view.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+            if (v.width > 0 && v.height > 0) {
+                ViewCompat.setSystemGestureExclusionRects(
+                    v,
+                    listOf(Rect(0, 0, v.width, v.height))
+                )
+            }
+        }
+    }
 
     private fun vibrateTick() {
         try {
@@ -191,22 +236,17 @@ class FreeformGestureService : Service() {
     private fun rebuildOverlays(settings: FreeformSettings) {
         clearOverlays()
         if (!Settings.canDrawOverlays(this)) return
-
-        // 1. 左下角斜向内滑呼出小窗菜单
         if (settings.cornerLeftLaunchEnabled) {
-            addCornerHotzone(isLeft = true, settings = settings)
+            addLeftCornerLaunchHotzone(settings)
         }
-        // 2. 右下角斜向内滑呼出小窗菜单
-        if (settings.cornerRightLaunchEnabled) {
-            addCornerHotzone(isLeft = false, settings = settings)
-        }
-        // 3. 侧边栏滑出呼出小窗菜单
         if (settings.sidebarLaunchEnabled) {
-            addSidebarLaunchHotzone(onRight = settings.sidebarOnRight, settings = settings)
+            addRightSidebarLaunchHotzone(settings)
         }
-        // 4. 屏幕边缘一键取消小窗手势热区
         if (settings.edgeDismissGestureEnabled) {
-            addEdgeDismissHotzone(onLeft = settings.edgeDismissOnLeft, settings = settings)
+            addEdgeBubbleControlHotzone(onLeft = settings.edgeDismissOnLeft, settings = settings)
+        }
+        if (settings.customControlCenterEnabled) {
+            addTopRightControlCenterHotzone(settings)
         }
     }
 
@@ -220,162 +260,13 @@ class FreeformGestureService : Service() {
         overlayViews.clear()
     }
 
-    @SuppressLint("ClickableViewAccessibility")
-    private fun addCornerHotzone(isLeft: Boolean, settings: FreeformSettings) {
-        val view = View(this).apply {
-            setBackgroundColor(
-                if (settings.showHotzoneDebug) Color.parseColor("#552196F3") else Color.TRANSPARENT
-            )
-        }
-        val thresholdPx = dp(settings.gestureSensitivityDp)
-        var startX = 0f
-        var startY = 0f
-        var armed = false
-
-        view.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startX = event.rawX
-                    startY = event.rawY
-                    armed = false
-                    true
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - startX
-                    val dy = startY - event.rawY // 向上为正
-                    val inward = if (isLeft) dx > thresholdPx * 0.65f else dx < -thresholdPx * 0.65f
-                    val upward = dy > thresholdPx * 0.65f
-                    if (inward && upward && !armed) {
-                        armed = true
-                        vibrateTick()
-                        showFeedbackCapsule("松手呼出小窗应用菜单")
-                    } else if (!(inward && upward) && armed) {
-                        armed = false
-                        hideFeedbackCapsule()
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    hideFeedbackCapsule()
-                    if (armed && event.actionMasked == MotionEvent.ACTION_UP) {
-                        openQuickPanel()
-                    }
-                    armed = false
-                    true
-                }
-
-                else -> false
-            }
-        }
-
-        val params = WindowManager.LayoutParams(
-            dp(36),
-            dp(96),
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = (if (isLeft) Gravity.START else Gravity.END) or Gravity.BOTTOM
-            y = dp(24)
-        }
-
-        try {
-            windowManager.addView(view, params)
-            overlayViews.add(view)
-        } catch (_: Exception) {
-        }
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun addSidebarLaunchHotzone(onRight: Boolean, settings: FreeformSettings) {
-        val view = FrameLayout(this).apply {
-            setBackgroundColor(
-                if (settings.showHotzoneDebug) Color.parseColor("#554CAF50") else Color.TRANSPARENT
-            )
-            // 半透明细指示条
-            val pill = View(context).apply {
-                background = GradientDrawable().apply {
-                    cornerRadius = dp(4).toFloat()
-                    setColor(Color.parseColor("#66FFFFFF"))
-                }
-                layoutParams = FrameLayout.LayoutParams(dp(4), dp(54)).apply {
-                    gravity = (if (onRight) Gravity.END else Gravity.START) or Gravity.CENTER_VERTICAL
-                    marginStart = dp(2)
-                    marginEnd = dp(2)
-                }
-            }
-            addView(pill)
-        }
-
-        val thresholdPx = dp(settings.gestureSensitivityDp)
-        var startX = 0f
-        var startY = 0f
-        var armed = false
-
-        view.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startX = event.rawX
-                    startY = event.rawY
-                    armed = false
-                    true
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - startX
-                    val dy = abs(event.rawY - startY)
-                    val inward = if (onRight) dx < -thresholdPx * 0.7f else dx > thresholdPx * 0.7f
-                    if (inward && dy < thresholdPx * 1.4f && !armed) {
-                        armed = true
-                        vibrateTick()
-                        showFeedbackCapsule("松手打开小窗快捷栏")
-                    } else if (!inward && armed) {
-                        armed = false
-                        hideFeedbackCapsule()
-                    }
-                    true
-                }
-
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    hideFeedbackCapsule()
-                    if (armed && event.actionMasked == MotionEvent.ACTION_UP) {
-                        openQuickPanel()
-                    }
-                    armed = false
-                    true
-                }
-
-                else -> false
-            }
-        }
-
-        val params = WindowManager.LayoutParams(
-            dp(18),
-            dp(140),
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = (if (onRight) Gravity.END else Gravity.START) or Gravity.CENTER_VERTICAL
-            y = -dp(40)
-        }
-
-        try {
-            windowManager.addView(view, params)
-            overlayViews.add(view)
-        } catch (_: Exception) {
-        }
-    }
-
     /**
-     * 屏幕边缘一键取消小窗手势热区：向内快速滑动或向下滑动即可直接取消当前小窗
+     * 边缘气泡快捷手势条（默认在左侧，避开右侧与右下角 Gemini）：
+     * - 向内滑 / 轻点：直接取消关闭当前原生气泡
+     * - 向下滑：将当前原生气泡收起为悬浮圆球
      */
     @SuppressLint("ClickableViewAccessibility")
-    private fun addEdgeDismissHotzone(onLeft: Boolean, settings: FreeformSettings) {
+    private fun addEdgeBubbleControlHotzone(onLeft: Boolean, settings: FreeformSettings) {
         val view = FrameLayout(this).apply {
             setBackgroundColor(
                 if (settings.showHotzoneDebug) Color.parseColor("#55F44336") else Color.TRANSPARENT
@@ -383,9 +274,9 @@ class FreeformGestureService : Service() {
             val indicator = View(context).apply {
                 background = GradientDrawable().apply {
                     cornerRadius = dp(4).toFloat()
-                    setColor(Color.parseColor("#66FF6B6B"))
+                    setColor(Color.parseColor("#AAFF5252"))
                 }
-                layoutParams = FrameLayout.LayoutParams(dp(4), dp(42)).apply {
+                layoutParams = FrameLayout.LayoutParams(dp(4), dp(52)).apply {
                     gravity = (if (onLeft) Gravity.START else Gravity.END) or Gravity.CENTER_VERTICAL
                     marginStart = dp(2)
                     marginEnd = dp(2)
@@ -393,43 +284,72 @@ class FreeformGestureService : Service() {
             }
             addView(indicator)
         }
+        excludeFromSystemBackGesture(view)
 
-        val thresholdPx = dp(settings.gestureSensitivityDp)
+        val thresholdPx = dp(settings.gestureSensitivityDp.coerceAtMost(40))
         var startX = 0f
         var startY = 0f
-        var armed = false
+        var mode = 0 // 0=none, 1=dismiss(inward), 2=collapse(down)
 
         view.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     startX = event.rawX
                     startY = event.rawY
-                    armed = false
+                    mode = 0
                     true
                 }
 
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - startX
                     val dy = event.rawY - startY
-                    val inward = if (onLeft) dx > thresholdPx * 0.75f else dx < -thresholdPx * 0.75f
-                    val swipeDown = dy > thresholdPx * 0.9f
-                    if ((inward || swipeDown) && !armed) {
-                        armed = true
-                        vibrateTick()
-                        showFeedbackCapsule("松手取消当前小窗")
-                    } else if (!(inward || swipeDown) && armed) {
-                        armed = false
-                        hideFeedbackCapsule()
+                    val inward = if (onLeft) dx > thresholdPx * 0.6f else dx < -thresholdPx * 0.6f
+                    val swipeDown = dy > thresholdPx * 0.75f
+                    when {
+                        inward && abs(dx) >= abs(dy) -> {
+                            if (mode != 1) {
+                                mode = 1
+                                vibrateTick()
+                                showFeedbackCapsule("松手取消当前气泡")
+                            }
+                        }
+
+                        swipeDown && abs(dy) > abs(dx) -> {
+                            if (mode != 2) {
+                                mode = 2
+                                vibrateTick()
+                                showFeedbackCapsule("松手收起气泡为圆球")
+                            }
+                        }
+
+                        else -> {
+                            if (mode != 0) {
+                                mode = 0
+                                hideFeedbackCapsule()
+                            }
+                        }
                     }
                     true
                 }
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     hideFeedbackCapsule()
-                    if (armed && event.actionMasked == MotionEvent.ACTION_UP) {
-                        triggerDismissFreeform()
+                    if (event.actionMasked == MotionEvent.ACTION_UP) {
+                        val dx = abs(event.rawX - startX)
+                        val dy = abs(event.rawY - startY)
+                        when {
+                            mode == 1 || (dx < dp(14) && dy < dp(14)) -> {
+                                vibrateTick()
+                                sendBubbleDismiss()
+                            }
+
+                            mode == 2 -> {
+                                vibrateTick()
+                                sendBubbleCollapse()
+                            }
+                        }
                     }
-                    armed = false
+                    mode = 0
                     true
                 }
 
@@ -438,15 +358,15 @@ class FreeformGestureService : Service() {
         }
 
         val params = WindowManager.LayoutParams(
-            dp(18),
-            dp(116),
+            dp(26),
+            dp(104),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = (if (onLeft) Gravity.START else Gravity.END) or Gravity.CENTER_VERTICAL
-            y = -dp(140)
+            y = -dp(130)
         }
 
         try {
@@ -456,225 +376,231 @@ class FreeformGestureService : Service() {
         }
     }
 
-    /**
-     * 当检测到存在活跃小窗时，在顶部自动显示轻量悬浮控制条：
-     * - 上滑关闭小窗
-     * - 双击关闭小窗
-     * - 下滑转全屏
-     */
     @SuppressLint("ClickableViewAccessibility")
-    private fun ensureTopControlHandleVisible() {
-        if (topHandleAdded || !Settings.canDrawOverlays(this)) return
-        val s = currentSettings
-        if (!s.topBarDismissSwipeUpEnabled && !s.topBarDismissDoubleTapEnabled && !s.topBarExpandSwipeDownEnabled) {
-            return
+    private fun addTopRightControlCenterHotzone(settings: FreeformSettings) {
+        val view = View(this).apply {
+            setBackgroundColor(
+                if (settings.showHotzoneDebug) Color.parseColor("#559C27B0") else Color.TRANSPARENT
+            )
         }
-
-        val container = FrameLayout(this).apply {
-            setPadding(dp(18), dp(8), dp(18), dp(12))
-            if (s.showHotzoneDebug) {
-                setBackgroundColor(Color.parseColor("#44FF9800"))
-            }
-        }
-
-        val pill = View(this).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = dp(6).toFloat()
-                setColor(Color.parseColor("#CCFFFFFF"))
-                setStroke(dp(1), Color.parseColor("#55000000"))
-            }
-            layoutParams = FrameLayout.LayoutParams(dp(54), dp(6)).apply {
-                gravity = Gravity.CENTER
-            }
-        }
-        container.addView(pill)
-
         var startY = 0f
-        var startX = 0f
-        var actionMode = 0 // 0=none, 1=dismiss(up), 2=expand(down)
+        var pulling = false
+        var vt: VelocityTracker? = null
 
-        container.setOnTouchListener { _, event ->
-            val thresholdPx = dp(currentSettings.gestureSensitivityDp.coerceAtMost(44))
+        view.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    startX = event.rawX
                     startY = event.rawY
-                    actionMode = 0
+                    pulling = false
+                    vt?.recycle()
+                    vt = VelocityTracker.obtain().apply { addMovement(event) }
                     true
                 }
-
                 MotionEvent.ACTION_MOVE -> {
+                    vt?.addMovement(event)
                     val dy = event.rawY - startY
-                    when {
-                        currentSettings.topBarDismissSwipeUpEnabled && dy < -thresholdPx * 0.65f -> {
-                            if (actionMode != 1) {
-                                actionMode = 1
-                                vibrateTick()
-                                showFeedbackCapsule("松手取消小窗")
-                            }
+                    if (dy > dp(8)) {
+                        if (!pulling) {
+                            pulling = true
+                            vibrateTick()
+                            controlCenter.beginInteractivePull(currentSettings)
                         }
-
-                        currentSettings.topBarExpandSwipeDownEnabled && dy > thresholdPx * 0.9f -> {
-                            if (actionMode != 2) {
-                                actionMode = 2
-                                vibrateTick()
-                                showFeedbackCapsule("松手展开为全屏")
-                            }
-                        }
-
-                        else -> {
-                            if (actionMode != 0) {
-                                actionMode = 0
-                                hideFeedbackCapsule()
-                            }
-                        }
+                        controlCenter.updateInteractivePull(dy)
                     }
                     true
                 }
-
-                MotionEvent.ACTION_UP -> {
-                    hideFeedbackCapsule()
-                    val dx = abs(event.rawX - startX)
-                    val dy = abs(event.rawY - startY)
-                    when (actionMode) {
-                        1 -> triggerDismissFreeform()
-                        2 -> triggerExpandFullscreen()
-                        else -> {
-                            if (currentSettings.topBarDismissDoubleTapEnabled && dx < dp(14) && dy < dp(14)) {
-                                val now = System.currentTimeMillis()
-                                if (now - lastTopBarTapMs < 360L) {
-                                    lastTopBarTapMs = 0L
-                                    vibrateTick()
-                                    triggerDismissFreeform()
-                                } else {
-                                    lastTopBarTapMs = now
-                                    flashToastCapsule("再点一次取消小窗 · 上滑也可取消")
-                                }
-                            }
-                        }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    vt?.computeCurrentVelocity(1000)
+                    val vy = vt?.yVelocity ?: 0f
+                    vt?.recycle()
+                    vt = null
+                    if (pulling) {
+                        controlCenter.finishInteractivePull(vy)
                     }
-                    actionMode = 0
+                    pulling = false
                     true
                 }
-
-                MotionEvent.ACTION_CANCEL -> {
-                    hideFeedbackCapsule()
-                    actionMode = 0
-                    true
-                }
-
                 else -> false
             }
         }
-
+        val barWidth = if (settings.ccFullTopBarTakeover) {
+            WindowManager.LayoutParams.MATCH_PARENT
+        } else {
+            dp(150)
+        }
         val params = WindowManager.LayoutParams(
-            dp(120),
-            dp(32),
+            barWidth,
+            dp(30),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dp(42)
+            gravity = Gravity.TOP or Gravity.END
         }
-
         try {
-            windowManager.addView(container, params)
-            topControlHandle = container
-            topHandleAdded = true
+            windowManager.addView(view, params)
+            overlayViews.add(view)
         } catch (_: Exception) {
         }
     }
 
-    private fun removeTopControlHandle() {
-        val v = topControlHandle ?: return
-        topControlHandle = null
-        topHandleAdded = false
-        try {
-            windowManager.removeView(v)
-        } catch (_: Exception) {
+    @SuppressLint("ClickableViewAccessibility")
+    private fun addLeftCornerLaunchHotzone(settings: FreeformSettings) {
+        val view = View(this).apply {
+            setBackgroundColor(
+                if (settings.showHotzoneDebug) Color.parseColor("#552196F3") else Color.TRANSPARENT
+            )
         }
-    }
-
-    /**
-     * 后台低频轮询当前是否存在 Freeform 活跃小窗，仅在小窗存在时显示顶部控制条
-     */
-    private fun startFreeformStateMonitor() {
-        monitorJob?.cancel()
-        monitorJob = serviceScope.launch {
-            while (isActive) {
-                val hasFreeform = RootFreeformEngine.getActiveFreeformTasks().isNotEmpty()
-                if (hasFreeform) {
-                    ensureTopControlHandleVisible()
-                } else {
-                    removeTopControlHandle()
+        excludeFromSystemBackGesture(view)
+        val thresholdPx = dp(settings.gestureSensitivityDp.coerceAtMost(40))
+        var startX = 0f
+        var startY = 0f
+        var armed = false
+        view.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { startX = event.rawX; startY = event.rawY; armed = false; true }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - startX
+                    val dy = startY - event.rawY
+                    if (dx > thresholdPx * 0.55f && dy > thresholdPx * 0.55f && !armed) {
+                        armed = true; vibrateTick(); showFeedbackCapsule("松手呼出小窗菜单")
+                    } else if (!(dx > thresholdPx * 0.55f && dy > thresholdPx * 0.55f) && armed) {
+                        armed = false; hideFeedbackCapsule()
+                    }
+                    true
                 }
-                delay(1800L)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    hideFeedbackCapsule()
+                    if (armed && event.actionMasked == MotionEvent.ACTION_UP) openQuickPanel()
+                    armed = false; true
+                }
+                else -> false
             }
         }
+        val params = WindowManager.LayoutParams(
+            dp(44), dp(96),
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.START or Gravity.BOTTOM; y = dp(20) }
+        try { windowManager.addView(view, params); overlayViews.add(view) } catch (_: Exception) {}
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun addRightSidebarLaunchHotzone(settings: FreeformSettings) {
+        val view = FrameLayout(this).apply {
+            setBackgroundColor(
+                if (settings.showHotzoneDebug) Color.parseColor("#554CAF50") else Color.TRANSPARENT
+            )
+            addView(View(context).apply {
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(4).toFloat()
+                    setColor(Color.parseColor("#88FFFFFF"))
+                }
+                layoutParams = FrameLayout.LayoutParams(dp(4), dp(60)).apply {
+                    gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                    marginEnd = dp(2)
+                }
+            })
+        }
+        excludeFromSystemBackGesture(view)
+        val thresholdPx = dp(settings.gestureSensitivityDp.coerceAtMost(38))
+        var startX = 0f
+        var startY = 0f
+        var armed = false
+        view.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { startX = event.rawX; startY = event.rawY; armed = false; true }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - startX
+                    val dy = abs(event.rawY - startY)
+                    if (dx < -thresholdPx * 0.55f && dy < thresholdPx * 1.8f && !armed) {
+                        armed = true; vibrateTick(); showFeedbackCapsule("松手打开小窗快捷栏")
+                    } else if (!(dx < -thresholdPx * 0.55f) && armed) {
+                        armed = false; hideFeedbackCapsule()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    hideFeedbackCapsule()
+                    val isTap = event.actionMasked == MotionEvent.ACTION_UP && abs(event.rawX - startX) < dp(14) && abs(event.rawY - startY) < dp(14)
+                    if ((armed && event.actionMasked == MotionEvent.ACTION_UP) || isTap) {
+                        vibrateTick(); openQuickPanel()
+                    }
+                    armed = false; true
+                }
+                else -> false
+            }
+        }
+        val params = WindowManager.LayoutParams(
+            dp(26), dp(116),
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL; y = -dp(30) }
+        try { windowManager.addView(view, params); overlayViews.add(view) } catch (_: Exception) {}
     }
 
     private fun openQuickPanel() {
         serviceScope.launch {
             val allApps = AppCatalog.loadLaunchableApps(this@FreeformGestureService)
             val chosen = currentSettings.quickLaunchPackages
-            val filtered = allApps.filter { it.packageName in chosen }
-                .ifEmpty { allApps.take(12) }
+            val filtered = allApps.filter { it.packageName in chosen }.ifEmpty { allApps.take(12) }
             quickLaunchPanel.show(filtered)
         }
     }
 
-    private fun launchPackageInFreeform(packageName: String) {
-        serviceScope.launch {
-            val ok = RootFreeformEngine.launchInFreeform(
-                context = this@FreeformGestureService,
-                packageName = packageName,
-                widthRatio = currentSettings.windowWidthRatio,
-                heightRatio = currentSettings.windowHeightRatio
-            )
-            if (ok) {
-                ensureTopControlHandleVisible()
-            } else {
-                flashToastCapsule("启动小窗失败，请检查 Root 权限")
-            }
+    private fun launchAppBubble(pkg: String) {
+        val intent = Intent(SystemUiHookEntry.ACTION_LAUNCH_APP_BUBBLE).apply {
+            putExtra(SystemUiHookEntry.EXTRA_PKG, pkg)
+        }
+        sendBroadcast(intent)
+    }
+
+    private fun sendBubbleDismiss() {
+        sendBroadcast(Intent(SystemUiHookEntry.ACTION_BUBBLE_DISMISS))
+        flashToastCapsule("已发送取消气泡指令")
+    }
+
+    private fun sendBubbleCollapse() {
+        sendBroadcast(Intent(SystemUiHookEntry.ACTION_BUBBLE_COLLAPSE))
+        flashToastCapsule("已收起气泡")
+    }
+
+    private fun openAppDirectly(packageName: String) {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            startActivity(launchIntent)
+        } catch (_: Exception) {
         }
     }
 
-    private fun triggerDismissFreeform() {
-        serviceScope.launch {
-            val ok = RootFreeformEngine.dismissTopFreeformTask()
-            if (ok) {
-                removeTopControlHandle()
-                flashToastCapsule("已取消小窗")
-            } else {
-                flashToastCapsule("当前没有可取消的小窗")
-            }
-        }
-    }
-
-    private fun triggerExpandFullscreen() {
-        serviceScope.launch {
-            val ok = RootFreeformEngine.expandTopFreeformToFullscreen()
-            if (ok) {
-                removeTopControlHandle()
-                flashToastCapsule("已展开为全屏")
-            }
-        }
-    }
-
-    private fun showNotificationBanner(packageName: String, title: String, text: String) {
+    private fun showNotificationOverlay(packageName: String, title: String, text: String) {
         serviceScope.launch {
             val entry = withContext(Dispatchers.IO) {
                 AppCatalog.loadAppEntry(this@FreeformGestureService, packageName)
             }
-            notificationBanner.show(
-                packageName = packageName,
-                appName = entry?.label ?: packageName,
-                appIcon = entry?.icon,
-                title = title,
-                text = text
-            )
+            val appName = entry?.label ?: packageName
+            if (currentSettings.danmakuNotificationEnabled) {
+                danmakuView.show(
+                    packageName = packageName,
+                    appName = appName,
+                    appIcon = entry?.icon,
+                    title = title,
+                    text = text
+                )
+            }
+            if (currentSettings.notificationBannerEnabled) {
+                notificationBanner.show(
+                    packageName = packageName,
+                    appName = appName,
+                    appIcon = entry?.icon,
+                    title = title,
+                    text = text
+                )
+            }
         }
     }
 
@@ -682,10 +608,10 @@ class FreeformGestureService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Flyme 小窗手势服务",
+            "AOSPA 气泡与弹幕服务",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "保持底角呼出小窗与手势取消小窗服务运行"
+            description = "提供全圆角弹幕通知与侧边一键取消气泡手势"
             setShowBadge(false)
         }
         nm.createNotificationChannel(channel)
@@ -706,10 +632,10 @@ class FreeformGestureService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Flyme小窗 · AOSPA 运行中")
-            .setContentText("底角/侧边呼出小窗 · 顶部条上滑或边缘手势取消小窗")
+            .setContentTitle("Flyme小窗 · AOSPA 17 增强运行中")
+            .setContentText("弹幕通知已就绪 · 左侧红条可一键取消/收起原生气泡")
             .setContentIntent(openAppIntent)
-            .addAction(0, "取消当前小窗", dismissIntent)
+            .addAction(0, "取消当前气泡", dismissIntent)
             .setOngoing(true)
             .build()
     }
@@ -718,9 +644,10 @@ class FreeformGestureService : Service() {
         private const val CHANNEL_ID = "flyme_freeform_service"
         private const val NOTIFICATION_ID = 1001
 
-        const val ACTION_OPEN_PANEL = "com.aospa.flymefreeform.OPEN_PANEL"
         const val ACTION_DISMISS_FREEFORM = "com.aospa.flymefreeform.DISMISS_FREEFORM"
-        const val ACTION_LAUNCH_PACKAGE = "com.aospa.flymefreeform.LAUNCH_PACKAGE"
+        const val ACTION_COLLAPSE_BUBBLE = "com.aospa.flymefreeform.COLLAPSE_BUBBLE"
+        const val ACTION_OPEN_CONTROL_CENTER = "com.aospa.flymefreeform.OPEN_CONTROL_CENTER"
+        const val ACTION_FLASH_TOAST = "com.aospa.flymefreeform.FLASH_TOAST"
         const val ACTION_SHOW_BANNER = "com.aospa.flymefreeform.SHOW_BANNER"
 
         const val EXTRA_PACKAGE_NAME = "extra_package"
@@ -732,8 +659,7 @@ class FreeformGestureService : Service() {
             private set
 
         fun start(context: Context) {
-            val intent = Intent(context, FreeformGestureService::class.java)
-            context.startForegroundService(intent)
+            context.startForegroundService(Intent(context, FreeformGestureService::class.java))
         }
 
         fun stop(context: Context) {

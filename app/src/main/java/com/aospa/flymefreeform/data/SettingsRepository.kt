@@ -1,32 +1,47 @@
 package com.aospa.flymefreeform.data
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
+import com.aospa.flymefreeform.xposed.SystemUiHookEntry
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 data class FreeformSettings(
-    val serviceEnabled: Boolean = true,
-    // 呼出小窗手势（默认全开）
+    // === LSPosed 原生气泡小窗魔改 ===
+    val xpBubbleNoScrim: Boolean = true,
+    val xpBubbleTouchOutside: Boolean = true,
+    val xpBubbleHeightScale: Float = 0.78f,
+    // === LSPosed 状态栏 & 通知栏样式 + 粗字体防裁切 ===
+    val xpClockStyle: Int = 2,          // 0=默认, 1=带秒, 2=星期+时间, 3=日期+星期, 4=时段+12h
+    val xpClockBold: Boolean = true,
+    val xpClockScale: Float = 1.0f,     // 0.80f..1.15f 防止粗体被裁切
+    val xpFixBoldClipping: Boolean = true,
+    val xpNotifCardStyle: Int = 2,      // 0=默认, 1=直角8dp, 2=Flyme柔和24dp, 3=胶囊玻璃34dp
+    // === 自定义控制中心（复刻截图同款 + 可自由设计） ===
+    val xpNativeQsEnabled: Boolean = true,
+    val customControlCenterEnabled: Boolean = false,
+    val ccFullTopBarTakeover: Boolean = false,
+    val ccThemeMode: Int = 0,           // 0=浅色磨砂(截图同款), 1=深色暗黑, 2=跟随系统
+    val ccBlurRadius: Int = 64,         // 0..100 系统原生高斯模糊强度
+    val ccCardRadiusDp: Int = 26,       // 8..34 卡片圆角
+    val ccCardAlpha: Float = 0.86f,     // 0.55f..1.0f 卡片透明度
+    val ccShowMusicCard: Boolean = true,
+    val ccShowVerticalSliders: Boolean = true,
+    val ccShowQuickToggles: Boolean = true,
+    val ccShowNotifications: Boolean = true,
+    // === 弹幕通知与边缘手势 ===
+    val danmakuNotificationEnabled: Boolean = true,
+    val autoCopyOtpEnabled: Boolean = true,
+    val notificationBannerEnabled: Boolean = false,
     val cornerLeftLaunchEnabled: Boolean = true,
-    val cornerRightLaunchEnabled: Boolean = true,
     val sidebarLaunchEnabled: Boolean = true,
-    val sidebarOnRight: Boolean = true,
-    // 取消/关闭小窗手势（默认全开）
-    val topBarDismissSwipeUpEnabled: Boolean = true,
-    val topBarDismissDoubleTapEnabled: Boolean = true,
-    val topBarExpandSwipeDownEnabled: Boolean = true,
-    val edgeDismissGestureEnabled: Boolean = true,
+    val edgeDismissGestureEnabled: Boolean = false,
     val edgeDismissOnLeft: Boolean = true,
-    // 悬浮通知直开小窗（默认开启）
-    val notificationBannerEnabled: Boolean = true,
-    // 尺寸与手感参数（针对小米13 1080x2400 屏幕优化默认值）
-    val windowWidthRatio: Float = 0.80f,
-    val windowHeightRatio: Float = 0.56f,
-    val gestureSensitivityDp: Int = 56,
+    val gestureSensitivityDp: Int = 38,
     val showHotzoneDebug: Boolean = false,
-    // 应用白名单
     val quickLaunchPackages: Set<String> = DEFAULT_QUICK_APPS,
     val notificationPackages: Set<String> = DEFAULT_NOTIFY_APPS
 ) {
@@ -36,8 +51,6 @@ data class FreeformSettings(
             "com.tencent.mobileqq",
             "org.telegram.messenger",
             "com.android.chrome",
-            "com.google.android.calculator",
-            "com.android.calculator2",
             "com.eg.android.AlipayGphone",
             "com.xingin.xhs",
             "tv.danmaku.bili"
@@ -55,32 +68,50 @@ data class FreeformSettings(
     }
 }
 
-class SettingsRepository(context: Context) {
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences("flyme_freeform_prefs", Context.MODE_PRIVATE)
+class SettingsRepository(private val context: Context) {
+
+    @SuppressLint("WorldReadableFiles")
+    private val prefs: SharedPreferences = try {
+        @Suppress("DEPRECATION")
+        context.getSharedPreferences(SystemUiHookEntry.PREFS_NAME, Context.MODE_WORLD_READABLE)
+    } catch (_: SecurityException) {
+        context.getSharedPreferences(SystemUiHookEntry.PREFS_NAME, Context.MODE_PRIVATE)
+    }
 
     private val _settings = MutableStateFlow(load())
     val settings: StateFlow<FreeformSettings> = _settings.asStateFlow()
 
     private fun load(): FreeformSettings {
         return FreeformSettings(
-            serviceEnabled = prefs.getBoolean("service_enabled", true),
+            xpBubbleNoScrim = prefs.getBoolean("xp_bubble_no_scrim", true),
+            xpBubbleTouchOutside = prefs.getBoolean("xp_bubble_touch_outside", true),
+            xpBubbleHeightScale = prefs.getFloat("xp_bubble_height_scale", 0.78f),
+            xpClockStyle = prefs.getInt("xp_clock_style", 2),
+            xpClockBold = prefs.getBoolean("xp_clock_bold", true),
+            xpClockScale = prefs.getFloat("xp_clock_scale", 1.0f),
+            xpFixBoldClipping = prefs.getBoolean("xp_fix_bold_clipping", true),
+            xpNotifCardStyle = prefs.getInt("xp_notif_card_style", 2),
+            xpNativeQsEnabled = prefs.getBoolean("xp_native_qs_enabled", true),
+            customControlCenterEnabled = prefs.getBoolean("cc_enabled_v4", false),
+            ccFullTopBarTakeover = prefs.getBoolean("cc_full_top_bar", false),
+            ccThemeMode = prefs.getInt("cc_theme_mode", 0),
+            ccBlurRadius = prefs.getInt("cc_blur_radius", 64),
+            ccCardRadiusDp = prefs.getInt("cc_card_radius_dp", 26),
+            ccCardAlpha = prefs.getFloat("cc_card_alpha", 0.86f),
+            ccShowMusicCard = prefs.getBoolean("cc_show_music", true),
+            ccShowVerticalSliders = prefs.getBoolean("cc_show_sliders", true),
+            ccShowQuickToggles = prefs.getBoolean("cc_show_toggles", true),
+            ccShowNotifications = prefs.getBoolean("cc_show_notifs", true),
+            danmakuNotificationEnabled = prefs.getBoolean("danmaku_notify", true),
+            autoCopyOtpEnabled = prefs.getBoolean("auto_copy_otp", true),
+            notificationBannerEnabled = prefs.getBoolean("notify_banner_v2", false),
             cornerLeftLaunchEnabled = prefs.getBoolean("corner_left_launch", true),
-            cornerRightLaunchEnabled = prefs.getBoolean("corner_right_launch", true),
             sidebarLaunchEnabled = prefs.getBoolean("sidebar_launch", true),
-            sidebarOnRight = prefs.getBoolean("sidebar_on_right", true),
-            topBarDismissSwipeUpEnabled = prefs.getBoolean("top_bar_swipe_up", true),
-            topBarDismissDoubleTapEnabled = prefs.getBoolean("top_bar_double_tap", true),
-            topBarExpandSwipeDownEnabled = prefs.getBoolean("top_bar_swipe_down", true),
-            edgeDismissGestureEnabled = prefs.getBoolean("edge_dismiss", true),
+            edgeDismissGestureEnabled = prefs.getBoolean("edge_dismiss_v41", false),
             edgeDismissOnLeft = prefs.getBoolean("edge_dismiss_left", true),
-            notificationBannerEnabled = prefs.getBoolean("notify_banner", true),
-            windowWidthRatio = prefs.getFloat("window_width_ratio", 0.80f),
-            windowHeightRatio = prefs.getFloat("window_height_ratio", 0.56f),
-            gestureSensitivityDp = prefs.getInt("gesture_sensitivity_dp", 56),
+            gestureSensitivityDp = prefs.getInt("gesture_sensitivity_dp", 38),
             showHotzoneDebug = prefs.getBoolean("show_hotzone_debug", false),
-            quickLaunchPackages = prefs.getStringSet("quick_apps", null)?.toSet()
-                ?: FreeformSettings.DEFAULT_QUICK_APPS,
+            quickLaunchPackages = prefs.getStringSet("quick_apps", null)?.toSet() ?: FreeformSettings.DEFAULT_QUICK_APPS,
             notificationPackages = prefs.getStringSet("notify_apps", null)?.toSet()
                 ?: FreeformSettings.DEFAULT_NOTIFY_APPS
         )
@@ -90,24 +121,41 @@ class SettingsRepository(context: Context) {
         val next = transform(_settings.value)
         _settings.value = next
         prefs.edit().apply {
-            putBoolean("service_enabled", next.serviceEnabled)
+            putBoolean("xp_bubble_no_scrim", next.xpBubbleNoScrim)
+            putBoolean("xp_bubble_touch_outside", next.xpBubbleTouchOutside)
+            putFloat("xp_bubble_height_scale", next.xpBubbleHeightScale)
+            putInt("xp_clock_style", next.xpClockStyle)
+            putBoolean("xp_clock_bold", next.xpClockBold)
+            putFloat("xp_clock_scale", next.xpClockScale)
+            putBoolean("xp_fix_bold_clipping", next.xpFixBoldClipping)
+            putInt("xp_notif_card_style", next.xpNotifCardStyle)
+            putBoolean("xp_native_qs_enabled", next.xpNativeQsEnabled)
+            putBoolean("cc_enabled_v4", next.customControlCenterEnabled)
+            putBoolean("cc_full_top_bar", next.ccFullTopBarTakeover)
+            putInt("cc_theme_mode", next.ccThemeMode)
+            putInt("cc_blur_radius", next.ccBlurRadius)
+            putInt("cc_card_radius_dp", next.ccCardRadiusDp)
+            putFloat("cc_card_alpha", next.ccCardAlpha)
+            putBoolean("cc_show_music", next.ccShowMusicCard)
+            putBoolean("cc_show_sliders", next.ccShowVerticalSliders)
+            putBoolean("cc_show_toggles", next.ccShowQuickToggles)
+            putBoolean("cc_show_notifs", next.ccShowNotifications)
+            putBoolean("danmaku_notify", next.danmakuNotificationEnabled)
+            putBoolean("auto_copy_otp", next.autoCopyOtpEnabled)
+            putBoolean("notify_banner_v2", next.notificationBannerEnabled)
             putBoolean("corner_left_launch", next.cornerLeftLaunchEnabled)
-            putBoolean("corner_right_launch", next.cornerRightLaunchEnabled)
             putBoolean("sidebar_launch", next.sidebarLaunchEnabled)
-            putBoolean("sidebar_on_right", next.sidebarOnRight)
-            putBoolean("top_bar_swipe_up", next.topBarDismissSwipeUpEnabled)
-            putBoolean("top_bar_double_tap", next.topBarDismissDoubleTapEnabled)
-            putBoolean("top_bar_swipe_down", next.topBarExpandSwipeDownEnabled)
-            putBoolean("edge_dismiss", next.edgeDismissGestureEnabled)
+            putBoolean("edge_dismiss_v41", next.edgeDismissGestureEnabled)
             putBoolean("edge_dismiss_left", next.edgeDismissOnLeft)
-            putBoolean("notify_banner", next.notificationBannerEnabled)
-            putFloat("window_width_ratio", next.windowWidthRatio)
-            putFloat("window_height_ratio", next.windowHeightRatio)
             putInt("gesture_sensitivity_dp", next.gestureSensitivityDp)
             putBoolean("show_hotzone_debug", next.showHotzoneDebug)
             putStringSet("quick_apps", next.quickLaunchPackages)
             putStringSet("notify_apps", next.notificationPackages)
             apply()
+        }
+        try {
+            context.sendBroadcast(Intent(SystemUiHookEntry.ACTION_RELOAD_CONFIG))
+        } catch (_: Exception) {
         }
     }
 }
