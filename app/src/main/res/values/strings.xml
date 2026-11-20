@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Flyme小窗 · AOSPA</string>
+    <string name="notification_listener_label">Flyme小窗通知直开服务</string>
+</resources>
